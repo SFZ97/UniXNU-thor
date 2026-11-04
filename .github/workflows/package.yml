@@ -460,16 +460,23 @@ jobs:
           UNIXNU_DEVICE: ${{ github.workspace }}/device
           PONG_VOLUME_LAYOUT: ${{ github.workspace }}/ci-volume-layout.json
           PONG_LLVM: ${{ env.LLVM_KEG }}/bin
+          OS_PROFILE: ${{ env.OS_PROFILE }}
+          PONG_CONFIG_NAME: thor_ipados18_ci_defconfig
         run: |
           set -euo pipefail
-          args=(--os "${OS_PROFILE}" --uefi ../uefi-pong -j 3 --unique-chip-id "${UNIXNU_UNIQUE_CHIP_ID}")
+          # `unixnu release` hard-codes the shared kernel step
+          # (build-xnu-4k-baseline.sh, MACHINE_CONFIGS=BCM2837), which this board
+          # cannot build: its XNU patches only provide MACHINE_CONFIGS=PONG. The
+          # thor packaging script reproduces the release steps but builds the kernel
+          # with the PongPlatform24 component recipe instead. See board.toml [kernel].
           # Without an original kernelcache the kernel step stages the native
           # build as kernel.macho, which is the bootable one. With prelink it
           # prelinks the extracted 22H374 kernelcache instead.
-          if [ "${PRELINK:-false}" != 'true' ]; then
-            args+=(--skip-prelink)
+          if [ "${PRELINK:-false}" = 'true' ]; then
+            echo 'prelink=true is not supported by package-thor-pong.sh (native-only staging); aborting' >&2
+            exit 1
           fi
-          ./scripts/package.sh "${args[@]}"
+          ./scripts/package-thor-pong.sh
       - name: boot image for the firmware
         env:
           UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}
@@ -499,7 +506,7 @@ jobs:
           from pathlib import Path
           root = Path('UniXNU/out/thor')
           wanted = ('boot/boot.img', 'boot/pong-xnu-initial.img', 'payload/payload.img',
-                    'kernel/kernel.macho', 'package.manifest.json', 'boot/pong-boot.json',
+                    'kernel/kernel.macho', 'boot/pong-boot.json',
                     'payload/pong-boot-manifest.json')
           found = {}
           for name in wanted:
@@ -509,6 +516,9 @@ jobs:
               found[name] = paths[0]
               data = paths[0].read_bytes()
               print('%-38s %12d bytes  sha256 %s' % (name, len(data), hashlib.sha256(data).hexdigest()[:16]))
+          # package.manifest.json is written by `unixnu release`'s verify step; the
+          # thor packaging script bypasses release and so does not write it.
+          manifests = sorted(root.rglob('package.manifest.json'))
           report = json.loads(found['boot/pong-boot.json'].read_text())
           # The flashable image is the container a local run writes: Android boot
           # v4, no kernel in the kernel slot, the payload in a PONGFAT1 envelope,
@@ -536,8 +546,11 @@ jobs:
           parameters = report['parameters']
           if parameters['dram_size'] != '0x300000000' or parameters['window_size'] != '0x100000000' or parameters['cpus'] != 1:
               raise SystemExit('the ADT parameters differ from a local run: %r' % (parameters,))
-          package = json.loads(found['package.manifest.json'].read_text())
-          print('kernel command line', package['kernel_command_line_bytes'], 'bytes')
+          if manifests:
+              package = json.loads(manifests[0].read_text())
+              print('kernel command line', package['kernel_command_line_bytes'], 'bytes')
+          else:
+              print('note: package.manifest.json absent (release verify skipped)')
           print('ADT', report['adt_bytes'], 'bytes, args', report['boot_args'][:48], '...')
           if report.get('hardware_tested') is not True:
               print('note: no device has run this boot image')

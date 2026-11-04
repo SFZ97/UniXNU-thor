@@ -81,9 +81,22 @@ def hardware_dtb(device, tree, given=None):
                '-o', str(tree / 'build/pong/hardware.dtb')]
     if not command[0]:
         raise SystemExit('dtc is missing; install it (brew install dtc)')
+    # include_dirs may carry a soc: prefix; those resolve against the SoC seed
+    # named by feeds.toml (kind=soc, path=migration/format2/soc-seed), which the
+    # upstream firmware preflight build-pong-hardware-dtb.py also uses.
+    soc_root = device
+    for src in tomllib.loads((device / 'feeds.toml').read_text()).get('source', []):
+        if src.get('kind') == 'soc' and src.get('path'):
+            soc_root = device / src['path']
+            break
     for item in spec.get('include_dirs', []):
         kind, _, relative = item.partition(':')
-        directory = device / relative if kind == 'device' else tree / relative
+        if kind == 'device':
+            directory = device / relative
+        elif kind == 'soc':
+            directory = soc_root / relative
+        else:
+            directory = tree / relative
         if not directory.is_dir():
             raise SystemExit(f'{directory} missing: [device_tree] include_dirs names it')
         command += ['-i', str(directory)]

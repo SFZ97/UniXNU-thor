@@ -318,7 +318,7 @@ jobs:
           # cmake, ninja and llvm have no bottle on this Tier 3 runner, so nothing
           # installs them: the image's own copies are used, and the llvm keg is put
           # on PATH rather than linked.
-          brew install dtc lzfse mtools nasm acpica
+          brew install dtc lzfse mtools nasm acpica lld
           ok=1
           for t in dtc lzfse mformat mcopy nasm iasl cmake ninja make unifdef python3; do
             command -v "$t" >/dev/null || { echo "missing tool: $t"; ok=0; }
@@ -337,13 +337,15 @@ jobs:
             [ -x "${LLD_KEG}/bin/${t}" ] || {
               filled=0
               for driver in lld ld.lld; do
-                if [ -x "${LLD_KEG}/bin/${driver}" ]; then
-                  ln -sf "${driver}" "${LLD_KEG}/bin/${t}" 2>/dev/null \
-                    || sudo ln -sf "${driver}" "${LLD_KEG}/bin/${t}"
-                  echo "created ${LLD_KEG}/bin/${t} -> ${driver}"
-                  filled=1
-                  break
-                fi
+                for src in "${LLD_KEG}/bin/${driver}" "${LLVM_KEG}/bin/${driver}"; do
+                  if [ -x "${src}" ]; then
+                    ln -sf "${src}" "${LLD_KEG}/bin/${t}" 2>/dev/null \
+                      || sudo ln -sf "${src}" "${LLD_KEG}/bin/${t}"
+                    echo "created ${LLD_KEG}/bin/${t} -> ${src}"
+                    filled=1
+                    break 2
+                  fi
+                done
               done
               [ "$filled" = 1 ] || { echo "missing tool: ${LLD_KEG}/bin/${t}"; ok=0; }
             }

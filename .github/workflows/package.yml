@@ -476,7 +476,7 @@ jobs:
             echo 'prelink=true is not supported by package-thor-pong.sh (native-only staging); aborting' >&2
             exit 1
           fi
-          ./scripts/package-thor-pong.sh
+          bash ./scripts/package-thor-pong.sh
       - name: boot image for the firmware
         env:
           UNIXNU_UNIQUE_CHIP_ID: ${{ secrets.UNIXNU_UNIQUE_CHIP_ID }}

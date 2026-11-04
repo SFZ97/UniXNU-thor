@@ -118,6 +118,10 @@ jobs:
         run: |
           set -euo pipefail
           export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
+          # decrypt-ipados18-aea.py unwraps the profile-1 AEA key with pyhpke
+          # (DHKEM P-256 / HKDF-SHA256 / AES-256-GCM); it is a pure-Python
+          # package not shipped on the runner image.
+          python3 -m pip install --quiet pyhpke
           ok=1
           for t in hdiutil diskutil aea python3; do
             command -v "$t" >/dev/null || { echo "missing tool: $t"; ok=0; }

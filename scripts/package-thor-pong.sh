@@ -44,7 +44,7 @@ WORK="$UNIXNU/out/thor/$OS_PROFILE/${CONFIG_NAME%_defconfig}"
 TREE="$WORK/tree"
 
 # Run `unixnu` with the device and OS profile this board resolves to.
-u() { python3 "$UNIXNU/unixnu" -D "$DEVICE" --os "$OS_PROFILE" "$@"; }
+u() { python3 "$UNIXNU/unixnu" "$@" -D "$DEVICE" --os "$OS_PROFILE"; }
 
 echo "=== step deps (fetch sources; IPSW components as the release step would) ==="
 u fetch

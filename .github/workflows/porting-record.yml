@@ -1,0 +1,27 @@
+name: Pong porting record
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: device
+          fetch-depth: 0
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: c96b29975645b711dc06bc435c3ad27321ce817c
+          path: tools
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install the device inputs the record is checked against
+        # The same script the package workflow runs: the 22H374 OS profile, and
+        # the PongPlatform24 entry the record's component check resolves.
+        run: python3 device/scripts/install-unixnu-inputs.py --unixnu tools
+      - name: Check porting record
+        run: python3 tools/scripts/porting-record.py check --device device

@@ -5,7 +5,7 @@ name: package
 #
 #   package   runs scripts/package.sh, i.e. `unixnu release -D .` with its fixed
 #             steps deps, preflight, patches, build, pack, verify, and writes
-#             out/pong/ipados-18.7.10-22H374/<config>/{boot/boot.img,
+#             out/thor/ipados-18.7.10-22H374/<config>/{boot/boot.img,
 #             payload/payload.img, kernel/kernel.macho, package.manifest.json}.
 #   userdata  builds the SHNGROOT image the NativeUfs transport reads as the root
 #             filesystem, and its volume UUIDs are what the kernel is compiled with.
@@ -368,14 +368,14 @@ jobs:
               match = re.fullmatch(r'([^\s=]+)(\s*=\s*)("[^"]*")\s*', line)
               if not match:
                   continue
-              lines[index] = match.group(1) + match.group(2) + json.dumps('pong_ipados18_ci_defconfig') + '\n'
+              lines[index] = match.group(1) + match.group(2) + json.dumps('thor_ipados18_ci_defconfig') + '\n'
               break
           else:
               raise SystemExit('[package.defconfig] has no entry to repoint')
           path.write_text(''.join(lines))
           mapping = tomllib.loads(path.read_text())['package']['defconfig']
           profile = os.environ['OS_PROFILE']
-          if mapping != {profile: 'pong_ipados18_ci_defconfig'}:
+          if mapping != {profile: 'thor_ipados18_ci_defconfig'}:
               raise SystemExit('repointing left %r' % (mapping,))
           print('configuration %s -> %s' % (profile, mapping[profile]))
           PY
@@ -463,7 +463,7 @@ jobs:
           #   container  Android boot v4 with an empty kernel slot and the payload
           #              in the PONGFAT1 envelope PongBootMemoryDxe publishes.
           python3 device/scripts/finalize-pong-adt.py \
-            --work-dir "UniXNU/out/pong/${OS_PROFILE}/pong_ipados18_ci" \
+            --work-dir "UniXNU/out/thor/${OS_PROFILE}/thor_ipados18_ci" \
             --uefi uefi-pong \
             --unique-chip-id "${UNIXNU_UNIQUE_CHIP_ID}" \
             --volume-layout ci-volume-layout.json
@@ -473,7 +473,7 @@ jobs:
           python3 - <<'PY'
           import hashlib, json, struct
           from pathlib import Path
-          root = Path('UniXNU/out/pong')
+          root = Path('UniXNU/out/thor')
           wanted = ('boot/boot.img', 'boot/pong-xnu-initial.img', 'payload/payload.img',
                     'kernel/kernel.macho', 'package.manifest.json', 'boot/pong-boot.json',
                     'payload/pong-boot-manifest.json')

@@ -120,8 +120,10 @@ jobs:
           export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
           # decrypt-ipados18-aea.py unwraps the profile-1 AEA key with pyhpke
           # (DHKEM P-256 / HKDF-SHA256 / AES-256-GCM); it is a pure-Python
-          # package not shipped on the runner image.
-          python3 -m pip install --quiet pyhpke
+          # package not shipped on the runner image. The runner's Homebrew
+          # Python is externally managed (PEP 668), so a plain pip install is
+          # refused; --break-system-packages is the only way to reach it.
+          python3 -m pip install --quiet --break-system-packages pyhpke
           ok=1
           for t in hdiutil diskutil aea python3; do
             command -v "$t" >/dev/null || { echo "missing tool: $t"; ok=0; }
@@ -327,8 +329,24 @@ jobs:
           for t in clang llvm-nm llvm-objcopy llvm-objdump llvm-strip llvm-lib llvm-rc; do
             [ -x "${LLVM_KEG}/bin/${t}" ] || { echo "missing tool: ${LLVM_KEG}/bin/${t}"; ok=0; }
           done
+          # The runner's unlinked lld keg ships the multi-call driver without
+          # the lld-link and ld64.lld argv[0] names. The driver takes its
+          # flavor from the name it is called by, so filling in the missing
+          # names is all the firmware toolchain needs.
           for t in lld-link ld64.lld; do
-            [ -x "${LLD_KEG}/bin/${t}" ] || { echo "missing tool: ${LLD_KEG}/bin/${t}"; ok=0; }
+            [ -x "${LLD_KEG}/bin/${t}" ] || {
+              filled=0
+              for driver in lld ld.lld; do
+                if [ -x "${LLD_KEG}/bin/${driver}" ]; then
+                  ln -sf "${driver}" "${LLD_KEG}/bin/${t}" 2>/dev/null \
+                    || sudo ln -sf "${driver}" "${LLD_KEG}/bin/${t}"
+                  echo "created ${LLD_KEG}/bin/${t} -> ${driver}"
+                  filled=1
+                  break
+                fi
+              done
+              [ "$filled" = 1 ] || { echo "missing tool: ${LLD_KEG}/bin/${t}"; ok=0; }
+            }
           done
           dtc --version
           [ "$ok" = 1 ]

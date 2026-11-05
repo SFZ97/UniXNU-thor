@@ -90,7 +90,10 @@ def main():
     print('Building Darwin 24; log:',log,flush=True)
     with log.open('w') as f:r=subprocess.run(['bash','scripts/build-xnu-ipados18.sh'],cwd=tree,env=env,stdout=f,stderr=subprocess.STDOUT)
     report.update(returncode=r.returncode,log=str(log));result.write_text(json.dumps(report,indent=2)+'\n')
-    if r.returncode:raise SystemExit(f'Build failed; log retained: {log}')
+    if r.returncode:
+        tail=''.join(log.read_text(errors='replace').splitlines(True)[-120:])
+        print(tail,flush=True,file=sys.stderr)
+        raise SystemExit(f'Build failed; log retained: {log}')
     kernel=tree/'build/xnu/ios-obj/DEVELOPMENT_ARM64_PONG/mach.development.pong'
     a.artifact_dir.mkdir(parents=True,exist_ok=True);shutil.copyfile(kernel,a.artifact_dir/kernel.name)
     report.update(build_complete=True,kernel=dict(path=str(a.artifact_dir/kernel.name),bytes=kernel.stat().st_size))

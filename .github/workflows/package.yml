@@ -571,6 +571,10 @@ jobs:
                   cp -f "$f" "products/$f"
                 done
           fi
+        # The XNU build log lives at the workspace root; collect it too.
+        for f in build-*.log; do
+          [ -f "$f" ] && cp -f "$f" "products/$f" || true
+        done
           [ -f ci-volume-layout.json ] && cp -f ci-volume-layout.json products/ || true
           [ -f device/local.toml ] && cp -f device/local.toml products/local.toml || true
           du -sh products

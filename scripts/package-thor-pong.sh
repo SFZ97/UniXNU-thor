@@ -91,6 +91,15 @@ echo "=== step build: prelink (stage the native aggregate as kernel.macho) ==="
 u build prelink --skip-prelink --uefi "$UEFI"
 
 echo "=== step build: package, firmware and payload (kernel step omitted) ==="
+# [firmware] packages names {tree}/drivers/DarwinBoot24, but schema_version 2's
+# tree step keeps only the components [components] lists, so drivers/ has no
+# entries. Stage the UEFI package as a real directory: the tree step clears
+# only symlinks, so it survives the rebuild `u build` runs before the firmware.
+if [ ! -d "$TREE/drivers/DarwinBoot24" ]; then
+  mkdir -p "$TREE/drivers"
+  cp -R "$DEVICE/drivers/DarwinBoot24" "$TREE/drivers/DarwinBoot24"
+  echo "staged firmware package DarwinBoot24 -> $TREE/drivers/DarwinBoot24"
+fi
 u build package firmware payload --uefi "$UEFI" -j "$JOBS"
 
 echo "=== step pack: boot image ==="

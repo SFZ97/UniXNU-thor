@@ -53,6 +53,18 @@ u fetch
 # them even when the kernel is staged native (--skip-prelink).
 u ipsw fetch
 
+# prepare-ipados18-storage.py reads the original 22H374 kernel cache from
+# apple/ipados18-22H374/components/kernelcache.release.ipad7c.decompressed/,
+# but `u ipsw fetch` extracts it to out/ipsw/22H374/kernelcache.decompressed.
+# Bridge the two layouts so the storage ABI derivation can find it.
+APPLE="$DEVICE/apple/ipados18-22H374/components/kernelcache.release.ipad7c.decompressed"
+IPSW_KERNEL="$UNIXNU/out/ipsw/$OS_PROFILE/kernelcache.decompressed"
+if [ ! -e "$APPLE/kernelcache.release.ipad7c.decompressed" ] && [ -f "$IPSW_KERNEL" ]; then
+  mkdir -p "$APPLE"
+  ln -sf "$IPSW_KERNEL" "$APPLE/kernelcache.release.ipad7c.decompressed"
+  echo "linked apple kernel cache -> $IPSW_KERNEL"
+fi
+
 echo "=== step preflight (write the resolved configuration) ==="
 u defconfig "$CONFIG_NAME"
 

@@ -1014,6 +1014,17 @@ PY_RAM_BLOCK_BINDINGS
     PLATFORM_ARCHIVES="$PLATFORM_ARCHIVES -Wl,-force_load,$WIFI_ARCHIVE"
     PLATFORM_DEPENDENCIES="$PLATFORM_DEPENDENCIES $WIFI_ARCHIVE"
   fi
+  # Weak stubs for the shared Apps SMMU lease API. PongUfsTransport declares
+  # pong_smmu_lease_lock/unlock as weak_import and NULL-checks before calling,
+  # but the kernel static linker still needs a definition. When the power/USB/
+  # WLAN aggregate is linked its strong definitions override these; without it
+  # (CI config drops Wi-Fi/backlight) the stubs keep the link happy.
+  cat > "$ROOT/build/smmu_lease_stubs.c" <<'STUB_EOF'
+__attribute__((weak)) _Bool pong_smmu_lease_lock(void) { return 1; }
+__attribute__((weak)) void pong_smmu_lease_unlock(void) {}
+STUB_EOF
+  clang -c -target arm64-apple-ios18.0 -o "$ROOT/build/smmu_lease_stubs.o" "$ROOT/build/smmu_lease_stubs.c"
+  PLATFORM_ARCHIVES="$PLATFORM_ARCHIVES $ROOT/build/smmu_lease_stubs.o"
   EXTRA_MAKE_ARGS+=("LD_KERNEL_ARCHIVES=$PLATFORM_ARCHIVES")
   EXTRA_MAKE_ARGS+=("XNU_EXTERNAL_KERNEL_ARCHIVES=$PLATFORM_DEPENDENCIES")
 fi

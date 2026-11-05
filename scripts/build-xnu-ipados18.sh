@@ -1024,7 +1024,9 @@ __attribute__((weak)) _Bool pong_smmu_lease_lock(void) { return 1; }
 __attribute__((weak)) void pong_smmu_lease_unlock(void) {}
 STUB_EOF
   clang -c -target arm64-apple-ios18.0 -o "$ROOT/build/smmu_lease_stubs.o" "$ROOT/build/smmu_lease_stubs.c"
-  PLATFORM_ARCHIVES="$PLATFORM_ARCHIVES $ROOT/build/smmu_lease_stubs.o"
+  ar rcs "$ROOT/build/smmu_lease_stubs.a" "$ROOT/build/smmu_lease_stubs.o"
+  echo "smmu_lease stubs: built $ROOT/build/smmu_lease_stubs.a"
+  PLATFORM_ARCHIVES="$PLATFORM_ARCHIVES -Wl,-force_load,$ROOT/build/smmu_lease_stubs.a"
   EXTRA_MAKE_ARGS+=("LD_KERNEL_ARCHIVES=$PLATFORM_ARCHIVES")
   EXTRA_MAKE_ARGS+=("XNU_EXTERNAL_KERNEL_ARCHIVES=$PLATFORM_DEPENDENCIES")
 fi

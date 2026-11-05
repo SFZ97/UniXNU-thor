@@ -766,6 +766,17 @@ else
   EXTRA_MAKE_ARGS+=("pcb.o_CFLAGS_ADD=")
   EXTRA_MAKE_ARGS+=("platform_tests.o_CFLAGS_ADD=")
 fi
+# pong_smmu_lease_lock/unlock are referenced by libNativeUfs.a. weak_import
+# only applies to dynamic linking; the static kernel link needs weak fallback
+# definitions. Built once; force_loaded into whichever archive list is active.
+mkdir -p "$ROOT/build"
+cat > "$ROOT/build/smmu_lease_stubs.c" <<'STUB_EOF'
+__attribute__((weak)) _Bool pong_smmu_lease_lock(void) { return 1; }
+__attribute__((weak)) void pong_smmu_lease_unlock(void) {}
+STUB_EOF
+clang -c -target arm64-apple-ios18.0 -o "$ROOT/build/smmu_lease_stubs.o" "$ROOT/build/smmu_lease_stubs.c"
+ar rcs "$ROOT/build/smmu_lease_stubs.a" "$ROOT/build/smmu_lease_stubs.o"
+echo "smmu_lease stubs: built $ROOT/build/smmu_lease_stubs.a"
 if [ "${XNU_SOURCE_CORECRYPTO14:-0}" = 1 ]; then
   CRYPTO_ARCHIVE=$ROOT/build/corecrypto-2023/libcorecrypto_kernel_noasm-namespaced.a
   test -f "$CRYPTO_ARCHIVE"
@@ -946,6 +957,8 @@ PY_BINDINGS
     KERNEL_EXTRA_ARCHIVES="$KERNEL_EXTRA_ARCHIVES -Wl,-force_load,$ROOT/build/boot-progress/libBootProgress.a"
     KERNEL_ARCHIVE_DEPENDENCIES="$KERNEL_ARCHIVE_DEPENDENCIES $ROOT/build/boot-progress/libBootProgress.a"
   fi
+  KERNEL_EXTRA_ARCHIVES="$KERNEL_EXTRA_ARCHIVES -Wl,-force_load,$ROOT/build/smmu_lease_stubs.a"
+  KERNEL_ARCHIVE_DEPENDENCIES="$KERNEL_ARCHIVE_DEPENDENCIES $ROOT/build/smmu_lease_stubs.a"
   KERNEL_EXTRA_ARCHIVES="$KERNEL_EXTRA_ARCHIVES ${XNU_EXTRA_LD_ARCHIVES:-}"
   EXTRA_MAKE_ARGS+=("LD_KERNEL_ARCHIVES=$KERNEL_EXTRA_ARCHIVES")
   EXTRA_MAKE_ARGS+=("XNU_EXTERNAL_KERNEL_ARCHIVES=$KERNEL_ARCHIVE_DEPENDENCIES")
@@ -1019,6 +1032,8 @@ PY_RAM_BLOCK_BINDINGS
     PLATFORM_ARCHIVES="$PLATFORM_ARCHIVES -Wl,-force_load,$WIFI_ARCHIVE"
     PLATFORM_DEPENDENCIES="$PLATFORM_DEPENDENCIES $WIFI_ARCHIVE"
   fi
+  PLATFORM_ARCHIVES="$PLATFORM_ARCHIVES -Wl,-force_load,$ROOT/build/smmu_lease_stubs.a"
+  PLATFORM_DEPENDENCIES="$PLATFORM_DEPENDENCIES $ROOT/build/smmu_lease_stubs.a"
   EXTRA_MAKE_ARGS+=("LD_KERNEL_ARCHIVES=$PLATFORM_ARCHIVES")
   EXTRA_MAKE_ARGS+=("XNU_EXTERNAL_KERNEL_ARCHIVES=$PLATFORM_DEPENDENCIES")
 fi

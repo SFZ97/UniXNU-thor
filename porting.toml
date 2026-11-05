@@ -1,7 +1,7 @@
 schema_version = 1
 
 [device]
-name = "pong"
+name = "thor"
 soc = "SM8475"
 os_profile = "ipados-18.7.10-22H374"
 summary = "Nothing Phone (2), iPadOS18 Darwin24 local format2 migration and board adaptation"

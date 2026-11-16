@@ -467,3 +467,17 @@ completion = ["Reviewable source-only pull request with cumulative WiFi,brightne
 limits = ["No private binaries,firmware,restore images,Data or credentials", "Full hosted build and packaging pipeline not run", "Poster frame backlog and audible wake recovery still unresolved", "Running22H374 remainsarm64"]
 next_action = ["Review and run the preserved hosted packaging workflow with required local inputs"]
 evidence = [{kind = "source", reported_kind = "host-build", reference = ".gitmodules", result = "Twelve Chengdong-Yu/pong-* driver repositories referenced as submodules under drivers/ with original path names."}, {kind = "source", reported_kind = "host-build", reference = "migration/ipados18/runtime-fixes-and-build-overlay.md", result = "Merged native helper/UI/audio/sleep/Sileo/phone/route binaries, frontend,ArmCpu and changed GPU units compiled. Prepared Mesa source reproduces all25 changed source files; current device results remain separately recorded."}]
+
+[[area]]
+id = "thor-apfs-gpt"
+status = "implemented"
+components = ["PongPlatform24"]
+paths = ["scripts/wrap-apfs-gpt.py"]
+inputs = ["A user-supplied bare 512-byte-aligned APFS container image."]
+configuration = ["Choose a fresh output image path. An optional partition GUID allows a predetermined GPT identity."]
+procedure = ["Run python3 scripts/wrap-apfs-gpt.py --input CONTAINER --output DISK and hand the resulting local image to the GPT-aware host tooling."]
+findings = ["The wrapper imported from Thor's earlier board work uses consistent primary and backup headers and partition entry CRCs. APFS bytes remain identical."]
+completion = ["Verify the intended APFS container is recognized through the boot or recovery path that consumes the new GPT image."]
+limits = ["This is a host preparation tool. The v156 boot-image packer uses an existing template and does not invoke this wrapper."]
+next_action = ["Use the wrapper when a host build starts with a bare APFS container and needs GPT framing."]
+evidence = [{kind = "source", reference = "scripts/wrap-apfs-gpt.py", result = "Implements the EFI header geometry, partition table CRCs and preserved partition payload."}]

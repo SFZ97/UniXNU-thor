@@ -1,0 +1,107 @@
+diff --git a/bsd/dev/pong_input.c b/bsd/dev/pong_input.c
+index d4e1132..eff101c 100644
+--- a/bsd/dev/pong_input.c
++++ b/bsd/dev/pong_input.c
+@@ -21,7 +21,7 @@ static LCK_MTX_DECLARE(node_lock,&touch_group);
+ struct input_queue {
+     struct pong_touch samples[QUEUE_SIZE];
+     uint32_t head,tail;
+-    bool opened,ready;
++    bool opened,ready,starting;
+ };
+ static struct input_queue queues[2];
+ static int input_major=-1;
+@@ -40,6 +40,49 @@ pong_touch_post(uint32_t type,uint32_t finger,uint32_t x,uint32_t y)
+     wakeup(q);
+ }
+
++/* Read begins after the virtual HID service is ready. Do not replay fully
++ * released contacts older than that start window. Keep complete pairs
++ * together and leave any live or ambiguous prefix untouched. */
++static unsigned
++touch_discard_stale_start(struct input_queue *q)
++{
++    uint64_t stale;
++    clock_interval_to_absolutetime_interval(1, NSEC_PER_SEC, &stale);
++    const uint64_t now = mach_absolute_time();
++    uint32_t active = 0;
++    uint32_t discard_to = q->head;
++
++    for (uint32_t index = q->head; index != q->tail; ++index) {
++        const struct pong_touch *sample = &q->samples[index % QUEUE_SIZE];
++        if (sample->time > now || now - sample->time < stale || sample->finger >= 10) {
++            break;
++        }
++        const uint32_t bit = 1u << sample->finger;
++        if (sample->type == PONG_TOUCH_DOWN) {
++            if (active & bit) {
++                break;
++            }
++            active |= bit;
++        } else {
++            if (!(active & bit)) {
++                break;
++            }
++            if (sample->type == PONG_TOUCH_UP) {
++                active &= ~bit;
++            } else if (sample->type != PONG_TOUCH_MOVE) {
++                break;
++            }
++        }
++        if (!active) {
++            discard_to = index + 1;
++        }
++    }
++
++    const unsigned discarded = discard_to - q->head;
++    q->head = discard_to;
++    return discarded;
++}
++
+ static int
+ touch_open(dev_t dev,int flags,__unused int kind,__unused struct proc *p)
+ {
+@@ -48,7 +91,11 @@ touch_open(dev_t dev,int flags,__unused int kind,__unused struct proc *p)
+     struct input_queue *q=&queues[minor(dev)];
+     lck_mtx_lock(&touch_lock);
+     int error=q->opened?EBUSY:0;
+-    if (!error) {q->opened=true;q->head=q->tail;}
++    if (!error) {
++        q->opened = true;
++        q->head = q->tail;
++        q->starting = minor(dev) == 0;
++    }
+     lck_mtx_unlock(&touch_lock);
+     return error;
+ }
+@@ -67,18 +114,26 @@ touch_read(dev_t dev,struct uio *uio,int flags)
+     struct input_queue *q=&queues[minor(dev)];
+     if (uio_resid(uio)<(user_ssize_t)sizeof(struct pong_touch)) return EINVAL;
+     int error=0;
++    unsigned discarded = 0;
++    struct pong_touch sample;
+     lck_mtx_lock(&touch_lock);
++    if (q->starting) {
++        q->starting = false;
++        discarded = touch_discard_stale_start(q);
++    }
+     while (q->head==q->tail) {
+         if (flags&IO_NDELAY) {error=EWOULDBLOCK;break;}
+         error=msleep(q,&touch_lock,PZERO|PCATCH,"pong-input",NULL);
+         if (error) break;
+     }
+     if (!error) {
+-        struct pong_touch sample=q->samples[q->head++%QUEUE_SIZE];
+-        lck_mtx_unlock(&touch_lock);
+-        return uiomove((caddr_t)&sample,sizeof(sample),uio);
++        sample = q->samples[q->head++ % QUEUE_SIZE];
++    }
++    lck_mtx_unlock(&touch_lock);
++    if (discarded) {
++        printf("Pong input: skipped %u stale completed touch samples at HID startup\n", discarded);
+     }
+-    lck_mtx_unlock(&touch_lock);return error;
++    return error ? error : uiomove((caddr_t)&sample, sizeof(sample), uio);
+ }
+
+ static const struct cdevsw touch_cdevsw={

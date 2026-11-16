@@ -1,0 +1,135 @@
+diff --git a/bsd/kern/kern_exec.c b/bsd/kern/kern_exec.c
+index 9b0e139406d6ba1f4509bb821800f975c62f62c1..8704fbdc04344ff2dc834f820f6aa2959b077521 100644
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -191,6 +191,10 @@
+ #include <mach/exclaves.h>
+ 
+ 
++#if defined(ARM64_BOARD_CONFIG_PONG) && (DEVELOPMENT || DEBUG)
++extern void thor_launch_sample_arm(thread_t, int);
++#endif
++
+ extern boolean_t vm_darkwake_mode;
+ 
+ /* enable crash reports on various exec failures */
+@@ -5018,6 +5022,14 @@ bad:
+ 		}
+ 		/* wake up the new thread */
+ 		task_clear_return_wait(get_threadtask(imgp->ip_new_thread), clearwait_flags);
++#if defined(ARM64_BOARD_CONFIG_PONG) && (DEVELOPMENT || DEBUG)
++
++		/* The normal child spawn sets spawn_no_exec, but still activates its image. */
++		if (error == 0 && exec_done && spawn_no_exec && p != PROC_NULL &&
++		    strcmp(proc_best_name(p), "Preferences") == 0) {
++			thor_launch_sample_arm(imgp->ip_new_thread, proc_getpid(p));
++		}
++#endif
+ 		thread_deallocate(imgp->ip_new_thread);
+ 		imgp->ip_new_thread = NULL;
+ 	}
+diff --git a/osfmk/kern/thread.c b/osfmk/kern/thread.c
+index 0bfcb98e55845f4b1ebb66f55ab6549fd23ce749..fe425facba8f94ee026441f6a0b2517b35256008 100644
+--- a/osfmk/kern/thread.c
++++ b/osfmk/kern/thread.c
+@@ -124,6 +124,11 @@
+ #include <kern/turnstile.h>
+ #include <kern/sched_clutch.h>
+ #include <kern/recount.h>
++#if defined(ARM64_BOARD_CONFIG_PONG) && (DEVELOPMENT || DEBUG)
++#include <kern/clock.h>
++#include <kern/thread_call.h>
++#include <mach/mach_time.h>
++#endif
+ #include <kern/smr.h>
+ #include <kern/ast.h>
+ #include <kern/compact_id.h>
+@@ -2264,6 +2269,88 @@ thread_read_times(
+ 	}
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_PONG) && (DEVELOPMENT || DEBUG)
++extern void thor_launch_sample_arm(thread_t, int);
++
++/* Sample the first successful Settings spawn. Recount and the scheduler's
++ * runnable timer report accounted time; an active slice may not be charged yet.
++ * The last CPU and run-state fields are separately sampled observations. */
++struct thor_launch_sample {
++	thread_call_data_t call;
++	thread_t thread;
++	uint64_t began;
++	int pid;
++	uint32_t delay_ms;
++};
++
++static bool thor_launch_sampling_started;
++static struct thor_launch_sample thor_launch_samples[] = {
++	{ .delay_ms = 400 },
++	{ .delay_ms = 900 },
++	{ .delay_ms = 1600 },
++};
++
++static uint64_t
++thor_launch_ticks_to_us(uint64_t ticks)
++{
++	uint64_t ns;
++	absolutetime_to_nanoseconds(ticks, &ns);
++	return ns / 1000;
++}
++
++static void
++thor_launch_sample_thread(thread_call_param_t parm, __unused thread_call_param_t unused)
++{
++	struct thor_launch_sample *sample = parm;
++	thread_t thread = sample->thread;
++	uint64_t now = mach_absolute_time();
++	struct recount_usage usage[RCT_CPU_KIND_COUNT] = { 0 };
++	recount_thread_perf_level_usage(thread, usage);
++
++	time_value_t runnable;
++	thread_read_times(thread, NULL, NULL, &runnable);
++	uint64_t runnable_us = 1000000ULL * (uint64_t)runnable.seconds + runnable.microseconds;
++	processor_t last = os_atomic_load(&thread->last_processor, relaxed);
++	int last_cpu = last == PROCESSOR_NULL ? -1 : last->cpu_id;
++	unsigned state = os_atomic_load(&thread->state, relaxed);
++
++	printf("PONG LAUNCH SCHED: Preferences pid=%d tid=%llu at_ms=%u elapsed_us=%llu e_us=%llu p_us=%llu runnable_us=%llu last_cpu=%d on_core=%u state=0x%x\n",
++	    sample->pid, (unsigned long long)thread_tid(thread), sample->delay_ms,
++	    (unsigned long long)thor_launch_ticks_to_us(now - sample->began),
++	    (unsigned long long)thor_launch_ticks_to_us(recount_usage_time_mach(&usage[RCT_CPU_EFFICIENCY])),
++	    (unsigned long long)thor_launch_ticks_to_us(recount_usage_time_mach(&usage[RCT_CPU_PERFORMANCE])),
++	    (unsigned long long)runnable_us, last_cpu, (unsigned)machine_thread_on_core(thread), state);
++
++	sample->thread = THREAD_NULL;
++	thread_deallocate(thread);
++}
++
++void
++thor_launch_sample_arm(thread_t thread, int pid)
++{
++	if (!os_atomic_cmpxchg(&thor_launch_sampling_started, false, true, relaxed)) {
++		return;
++	}
++
++	const uint64_t began = mach_absolute_time();
++	for (size_t i = 0; i < sizeof(thor_launch_samples) / sizeof(thor_launch_samples[0]); i++) {
++		struct thor_launch_sample *sample = &thor_launch_samples[i];
++		sample->began = began;
++		sample->pid = pid;
++		sample->thread = thread;
++		thread_reference(thread);
++		thread_call_setup_with_options(&sample->call, thor_launch_sample_thread, sample,
++		    THREAD_CALL_PRIORITY_LOW, THREAD_CALL_OPTIONS_ONCE);
++
++		uint64_t delay;
++		clock_interval_to_absolutetime_interval(sample->delay_ms, NSEC_PER_MSEC, &delay);
++		thread_call_enter_delayed(&sample->call, began + delay);
++	}
++	printf("PONG LAUNCH SCHED ARMED: Preferences pid=%d start_us=%llu\n",
++	    pid, (unsigned long long)thor_launch_ticks_to_us(began));
++}
++#endif
++
+ uint64_t
+ thread_get_runtime_self(void)
+ {

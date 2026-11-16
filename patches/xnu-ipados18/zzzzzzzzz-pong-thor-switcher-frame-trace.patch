@@ -1,0 +1,362 @@
+diff --git a/bsd/kern/kern_exit.c b/bsd/kern/kern_exit.c
+index 5372d98..da0ab36 100644
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -139,6 +139,7 @@
+ #include <os/system_event_log.h>
+
+ #include <pexpert/pexpert.h>
++#include <pexpert/arm64/board_config.h>
+
+ #if defined(PONG)
+ extern void pong_ramoops_diagnostic_write(const char *, int);
+@@ -161,6 +162,54 @@ pong_diagnostic_sysctl SYSCTL_HANDLER_ARGS
+ 	int error = SYSCTL_IN(req, text, req->newlen);
+ 	if (error) return error;
+ 	text[req->newlen] = 0;
++
++#if XNU_PONG_ADRENO_PLATFORM && (DEVELOPMENT || DEBUG) && !SECURE_KERNEL
++	static const char switcher_prefix[] = "Pong Switcher: ";
++	const size_t prefix_size = sizeof(switcher_prefix) - 1;
++	if (req->newlen >= prefix_size && !memcmp(text, switcher_prefix, prefix_size)) {
++		unsigned enabled = 0;
++		if (strcmp(process->p_comm, "SpringBoard") != 0 ||
++		    !PE_parse_boot_argn("thor_switcher_trace", &enabled, sizeof(enabled)) || enabled != 1) {
++			return EPERM;
++		}
++		if (req->newlen == prefix_size + 18 &&
++		    (text[prefix_size] == 'P' || text[prefix_size] == 'K') &&
++		    text[prefix_size + 1] == ' ') {
++			uint64_t timestamp = 0;
++			for (size_t i = prefix_size + 2; i < req->newlen; ++i) {
++				const char digit = text[i];
++				if (!((digit >= '0' && digit <= '9') || (digit >= 'a' && digit <= 'f'))) {
++					return EINVAL;
++				}
++				timestamp = (timestamp << 4) | (uint64_t)(digit <= '9' ?
++				    digit - '0' : digit - 'a' + 10);
++			}
++			extern int thor_switcher_trace_arm(unsigned, uint64_t);
++			return thor_switcher_trace_arm(text[prefix_size] == 'P' ? 1 : 2, timestamp);
++		}
++
++		static const char install_prefix[] = "timing armed drag=";
++		const char *status = text + prefix_size;
++		const char *flags = status + sizeof(install_prefix) - 1;
++		const bool armed = req->newlen == prefix_size + sizeof(install_prefix) - 1 + 8 &&
++		    !memcmp(status, install_prefix, sizeof(install_prefix) - 1) &&
++		    (flags[0] == '0' || flags[0] == '1') &&
++		    !memcmp(flags + 1, " kill=", 6) &&
++		    (flags[7] == '0' || flags[7] == '1');
++		static const char unavailable[] = "timing unavailable";
++		if (!armed && (req->newlen != prefix_size + sizeof(unavailable) - 1 ||
++		    memcmp(status, unavailable, sizeof(unavailable) - 1) != 0)) {
++			return EINVAL;
++		}
++		static unsigned switcher_status_count;
++		unsigned count = __atomic_load_n(&switcher_status_count, __ATOMIC_RELAXED);
++		if (count < 2 && __atomic_compare_exchange_n(&switcher_status_count, &count,
++		    count + 1, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
++			printf("PONG SWITCHER STATUS: %s\n", text);
++		}
++		return 0;
++	}
++#endif
+ 	int length = snprintf(line, sizeof(line), "%s[%d]: %s\n",
+ 	    settings ? "PONG SETTINGS" : "PONG GPU", proc_getpid(process), text);
+ 	if (length > 0) pong_ramoops_diagnostic_write(line,
+diff --git a/iokit/Kernel/MiniIOMobileFramebuffer.cpp b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
+index 18c42d5..977221c 100644
+--- a/iokit/Kernel/MiniIOMobileFramebuffer.cpp
++++ b/iokit/Kernel/MiniIOMobileFramebuffer.cpp
+@@ -27,6 +27,7 @@
+ #include <libkern/c++/OSSymbol.h>
+ #include <libkern/c++/OSCollectionIterator.h>
+ #include <kern/thread_call.h>
++#include <kern/locks.h>
+ #include <kern/thread.h>
+ #include <kern/clock.h>
+ #include <IOKit/IOKitServer.h>
+@@ -53,6 +54,129 @@ static void pongDisplayTrace(uint32_t event,uint64_t id,uint64_t phase,uint64_t
+
+ extern "C" bool pong_scanout_quarantined(void);
+ extern "C" void pong_scanout_idle(void);
++
++/* A boot-wide bounded trace. Rendering only appends to memory. */
++struct ThorSwitcherFrame {
++	uint64_t enqueued, dequeued, ready, shown, drawn, gpuWriter;
++	uint32_t id;
++};
++
++struct ThorSwitcherCue {
++	uint64_t user, kernel;
++	unsigned phase;
++};
++
++LCK_GRP_DECLARE(thor_switcher_trace_group, "thor-switcher-trace");
++LCK_MTX_DECLARE(thor_switcher_trace_lock, &thor_switcher_trace_group);
++static ThorSwitcherFrame gSwitcherFrames[1152];
++static ThorSwitcherCue gSwitcherCues[96];
++static unsigned gSwitcherFrameCount, gSwitcherCueCount;
++static uint64_t gSwitcherTraceEnd, gSwitcherHardEnd;
++static bool gSwitcherTraceSealed;
++static thread_call_t gSwitcherTraceCall;
++
++static unsigned long long
++thorSwitcherMicros(uint64_t timestamp)
++{
++	uint64_t ns = 0;
++	absolutetime_to_nanoseconds(timestamp, &ns);
++	return static_cast<unsigned long long>(ns / 1000);
++}
++
++static void
++thorSwitcherReport(thread_call_param_t, thread_call_param_t)
++{
++	lck_mtx_lock(&thor_switcher_trace_lock);
++	if (gSwitcherTraceSealed) {
++		lck_mtx_unlock(&thor_switcher_trace_lock);
++		return;
++	}
++	const uint64_t deadline = __atomic_load_n(&gSwitcherTraceEnd, __ATOMIC_RELAXED);
++	if (deadline > mach_absolute_time()) {
++		thread_call_enter_delayed(gSwitcherTraceCall, deadline);
++		lck_mtx_unlock(&thor_switcher_trace_lock);
++		return;
++	}
++	gSwitcherTraceSealed = true;
++	__atomic_store_n(&gSwitcherTraceEnd, 0, __ATOMIC_RELAXED);
++	lck_mtx_unlock(&thor_switcher_trace_lock);
++
++	IOLog("PONG SWITCHER: capture cues=%u swaps=%u full=%u retirement includes CPU writeback and surface-readiness misses\n",
++	    gSwitcherCueCount, gSwitcherFrameCount,
++	    gSwitcherFrameCount == sizeof(gSwitcherFrames) / sizeof(gSwitcherFrames[0]));
++	for (unsigned index = 0; index < gSwitcherCueCount; ++index) {
++		const ThorSwitcherCue &cue = gSwitcherCues[index];
++		IOLog("PONG SWITCHER CUE: phase=%u user_us=%llu kernel_us=%llu\n",
++		    cue.phase, thorSwitcherMicros(cue.user), thorSwitcherMicros(cue.kernel));
++	}
++	for (unsigned index = 0; index < gSwitcherFrameCount; ++index) {
++		const ThorSwitcherFrame &frame = gSwitcherFrames[index];
++		IOLog("PONG SWITCHER FRAME: swap=%u enqueue_us=%llu dequeue_us=%llu ready_us=%llu "
++		    "start_us=%llu done_us=%llu writer_wait_us=%llu\n", frame.id, thorSwitcherMicros(frame.enqueued),
++		    thorSwitcherMicros(frame.dequeued), thorSwitcherMicros(frame.ready),
++		    thorSwitcherMicros(frame.shown), thorSwitcherMicros(frame.drawn),
++		    thorSwitcherMicros(frame.gpuWriter));
++	}
++}
++
++extern "C" int thor_switcher_trace_arm(unsigned phase, uint64_t user);
++
++extern "C" int
++thor_switcher_trace_arm(unsigned phase, uint64_t user)
++{
++	const uint64_t now = mach_absolute_time();
++	uint64_t quiet, window;
++	nanoseconds_to_absolutetime(950ull * NSEC_PER_MSEC, &quiet);
++	nanoseconds_to_absolutetime(8ull * NSEC_PER_SEC, &window);
++	if (!user || user > now || now - user > quiet) {
++		return EINVAL;
++	}
++	lck_mtx_lock(&thor_switcher_trace_lock);
++	if (gSwitcherTraceSealed) {
++		lck_mtx_unlock(&thor_switcher_trace_lock);
++		return 0;
++	}
++	if (!gSwitcherTraceCall) {
++		gSwitcherTraceCall = thread_call_allocate_with_priority(thorSwitcherReport,
++		    nullptr, THREAD_CALL_PRIORITY_LOW);
++		if (!gSwitcherTraceCall) {
++			lck_mtx_unlock(&thor_switcher_trace_lock);
++			return ENOMEM;
++		}
++		gSwitcherHardEnd = now + window;
++	}
++	if (gSwitcherCueCount < sizeof(gSwitcherCues) / sizeof(gSwitcherCues[0])) {
++		gSwitcherCues[gSwitcherCueCount++] = { user, now, phase };
++	}
++	const uint64_t deadline = now + quiet < gSwitcherHardEnd ? now + quiet : gSwitcherHardEnd;
++	__atomic_store_n(&gSwitcherTraceEnd, deadline, __ATOMIC_RELAXED);
++	thread_call_enter_delayed(gSwitcherTraceCall, deadline);
++	lck_mtx_unlock(&thor_switcher_trace_lock);
++	return 0;
++}
++
++static bool
++thorSwitcherTracing(uint64_t now)
++{
++	const uint64_t deadline = __atomic_load_n(&gSwitcherTraceEnd, __ATOMIC_RELAXED);
++	return deadline && now <= deadline;
++}
++
++static void
++thorSwitcherCapture(uint32_t swap, uint64_t enqueued, uint64_t dequeued,
++    uint64_t ready, uint64_t shown, uint64_t drawn, uint64_t gpuWriter)
++{
++	const uint64_t now = drawn ? drawn : mach_absolute_time();
++	if (!thorSwitcherTracing(now)) {
++		return;
++	}
++	lck_mtx_lock(&thor_switcher_trace_lock);
++	if (!gSwitcherTraceSealed &&
++	    gSwitcherFrameCount < sizeof(gSwitcherFrames) / sizeof(gSwitcherFrames[0])) {
++		gSwitcherFrames[gSwitcherFrameCount++] = { enqueued, dequeued, ready, shown, drawn, gpuWriter, swap };
++	}
++	lck_mtx_unlock(&thor_switcher_trace_lock);
++}
+ #endif
+ #if XNU_PONG_BACKLIGHT
+ extern "C" void pong_backlight_start(IOService *display);
+@@ -242,6 +366,9 @@ public:
+ 	IOLock *        fSwapLock;              /* around the next five */
+ 	uint8_t         fSwap[SWAP_QUEUE][SWAP_SIZE];   /* the swaps on their way to the panel (fb_queue), from fSwapFirst on */
+ 	MiniIOSurface * fSwapSurfaces[SWAP_QUEUE][SWAP_LAYERS]; /* ... their surfaces, held from SwapEnd on: their maker may let go of them */
++#if XNU_PONG_ADRENO_PLATFORM
++	uint64_t        fSwitcherEnqueue[SWAP_QUEUE]; /* protected by fSwapLock */
++#endif
+ 	unsigned        fSwapFirst, fSwapsWaiting;
+ 	struct {uint32_t id;IOReturn result;} fRetired[64];
+ 	IOReturn waitSwap(uint32_t id,uint32_t flags,uint64_t timeout);
+@@ -289,7 +416,7 @@ public:
+ 	bool failStart(IOService * provider);
+ 	MiniIOSurface * defaultSurface(void);
+ 	IOReturn present(const uint8_t * swap);
+-	IOReturn show(const uint8_t * swap, MiniIOSurface ** surfaces);
++	IOReturn show(const uint8_t * swap, MiniIOSurface ** surfaces, uint64_t enqueued, uint64_t dequeued);
+ 	void presenter(void);
+ 	static void presenterMain(void * self, wait_result_t result);
+ 	void reportFrameTimes(void);
+@@ -904,6 +1031,17 @@ IOMobileFramebuffer::present(const uint8_t * swap)
+ 	unsigned slot = (fSwapFirst + fSwapsWaiting) % SWAP_QUEUE;
+
+ 	memcpy(fSwap[slot], swap, SWAP_SIZE);
++#if XNU_PONG_ADRENO_PLATFORM
++	fSwitcherEnqueue[slot] = 0;
++	if (thorSwitcherTracing(now) && fPanelWidth == 1440 && fPanelHeight == 3200 &&
++	    swapWord(swap, SWAP_SURFACE(0))) {
++		char submitter[32];
++		proc_selfname(submitter, sizeof(submitter));
++		if (strcmp(submitter, "backboardd") == 0) {
++			fSwitcherEnqueue[slot] = now;
++		}
++	}
++#endif
+ 	for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
+ 		uint32_t sid = swapWord(swap, SWAP_SURFACE(layer));
+
+@@ -957,8 +1095,15 @@ IOMobileFramebuffer::presenter(void)
+ 		}
+ 		memcpy(swap, fSwap[fSwapFirst], SWAP_SIZE);
+ 		memcpy(surfaces, fSwapSurfaces[fSwapFirst], sizeof(surfaces));
++		uint64_t enqueued = 0, dequeued = 0;
++#if XNU_PONG_ADRENO_PLATFORM
++		enqueued = fSwitcherEnqueue[fSwapFirst];
++		if (enqueued) {
++			dequeued = mach_absolute_time();
++		}
++#endif
+ 		IOLockUnlock(fSwapLock);
+-        IOReturn result=show(swap,surfaces);
++        IOReturn result=show(swap, surfaces, enqueued, dequeued);
+         IOLockLock(fSwapLock);
+         const uint32_t id=swapWord(swap,SWAP_ID);
+         fRetired[id%64]={id,result};
+@@ -976,13 +1121,16 @@ IOMobileFramebuffer::presenter(void)
+
+ /* A swap's surfaces onto the panel, once the GPU is done with them. */
+ IOReturn
+-IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
++IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces,
++    uint64_t enqueued __unused, uint64_t dequeued __unused)
+ {
+ 	uint32_t set = swapWord(swap, SWAP_LAYERS_SET);
+ 	uint64_t began = mach_absolute_time(), nanos, ready, shown, drawn;
+ 	uint32_t layers = 0;
+ 	bool report;
+ 	bool surfacesReady = true;
++	uint64_t writerTicks = 0;
++	uint64_t *writerWait = enqueued && surfaces[0] ? &writerTicks : nullptr;
+ #if XNU_PONG_ADRENO_PLATFORM
+     pongDisplayTrace(20,swapWord(swap,SWAP_ID),1,swapWord(swap,SWAP_SURFACE(0)));
+ #endif
+@@ -992,7 +1140,7 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
+     } readers;
+
+ 	for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
+-		if (surfaces[layer] != NULL && !MiniIOSurfaceDrawn(surfaces[layer], SWAP_GPU_MS)) {
++		if (surfaces[layer] != NULL && !MiniIOSurfaceDrawn(surfaces[layer], SWAP_GPU_MS, writerWait)) {
+ 			surfacesReady = false;
+ #if XNU_PONG_ADRENO_PLATFORM
+             pongDisplayTrace(22,swapWord(swap,SWAP_ID),3,swapWord(swap,SWAP_SURFACE(layer)),SWAP_GPU_MS);
+@@ -1007,6 +1155,11 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
+ 	}
+ 	fStatWaiting += mach_absolute_time() - began;
+ 	began = ready = mach_absolute_time();
++#if XNU_PONG_ADRENO_PLATFORM
++	if (enqueued && !surfacesReady) {
++		thorSwitcherCapture(swapWord(swap, SWAP_ID), enqueued, dequeued, 0, 0, 0, writerTicks);
++	}
++#endif
+ 	if (gOnTheBeat) {
+ 		uint64_t period, aim, next;
+
+@@ -1085,6 +1238,9 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
+ 		IOLockUnlock(fLock);return kIOReturnNotReady;
+ 	}
+
++#if XNU_PONG_ADRENO_PLATFORM
++	const uint64_t writeStarted = enqueued && !gpuFrame ? mach_absolute_time() : 0;
++#endif
+ 	for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
+ 		uint32_t sid = swapWord(swap, SWAP_SURFACE(layer));
+ 		int32_t src[4], dst[4];
+@@ -1127,6 +1283,12 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
+ 		}
+ 	}
+ 	drawn = mach_absolute_time();
++#if XNU_PONG_ADRENO_PLATFORM
++	if (writeStarted && surfaces[0]) {
++		thorSwitcherCapture(swapWord(swap, SWAP_ID), enqueued, dequeued, ready,
++		    writeStarted, drawn, writerTicks);
++	}
++#endif
+ 	fSwapsShown++;
+ 	if (gTouchLat) {
+ 		IOLog("tl: v %u ready %llu shown %llu done %llu\n", swapWord(swap, SWAP_ID), micros(ready), micros(shown),
+diff --git a/iokit/Kernel/MiniIOSurface.cpp b/iokit/Kernel/MiniIOSurface.cpp
+index 9e2008c..f503ed1 100644
+--- a/iokit/Kernel/MiniIOSurface.cpp
++++ b/iokit/Kernel/MiniIOSurface.cpp
+@@ -2276,13 +2276,16 @@ IOSurfaceRootUserClient::trapRelease(void * p1, void * p2, void * p3, void * p4,
+ /* The Metal frontend brackets actual submissions with authorized send
+  * rights. Reading starts only after those GPU jobs and cache acquisition
+  * completed; subsequent writers wait until the display finishes copying. */
+-bool MiniIOSurfaceDrawn(MiniIOSurface *surface,uint64_t milliseconds)
++bool MiniIOSurfaceDrawn(MiniIOSurface *surface, uint64_t milliseconds, uint64_t *writerWait)
+ {
+     if(!surface)return false;
+     uint64_t deadline;clock_interval_to_deadline((uint32_t)(milliseconds>1000?1000:milliseconds),kMillisecondScale,&deadline);
+     IOLockLock(gSurfaceLock);
+     while(surface->gpuWriters && !surface->gpuFailed) {
+-        if(IOLockSleepDeadline(gSurfaceLock,surface,deadline,THREAD_ABORTSAFE)!=THREAD_AWAKENED) {
++        const uint64_t before = writerWait ? mach_absolute_time() : 0;
++        const wait_result_t result = IOLockSleepDeadline(gSurfaceLock, surface, deadline, THREAD_ABORTSAFE);
++        if (writerWait) *writerWait += mach_absolute_time() - before;
++        if(result!=THREAD_AWAKENED) {
+             IOLockUnlock(gSurfaceLock);return false;
+         }
+     }
+diff --git a/iokit/Kernel/MiniIOSurface.h b/iokit/Kernel/MiniIOSurface.h
+index 29c3e07..812a8d8 100644
+--- a/iokit/Kernel/MiniIOSurface.h
++++ b/iokit/Kernel/MiniIOSurface.h
+@@ -168,7 +168,8 @@ void            MiniIOSurfaceCost(uint32_t * made, uint64_t * making, uint32_t *
+ /* Clear the memory that is kept of surfaces that are gone, for the next ones: when the caller has a moment. */
+ void            MiniIOSurfaceClearKept(void);
+ /* True only when the surface has no pending GPU fence in this CPU backend. */
+-bool            MiniIOSurfaceDrawn(MiniIOSurface * surface, uint64_t milliseconds);
++bool            MiniIOSurfaceDrawn(MiniIOSurface * surface, uint64_t milliseconds,
++    uint64_t *writerWait = nullptr);
+ void            MiniIOSurfaceDisplayDone(MiniIOSurface * surface);
+ MiniIOSurface * MiniIOSurfaceCreateSimple(uint32_t width, uint32_t height, uint32_t pixelFormat);
+ void            MiniIOSurfaceDrop(MiniIOSurface * surface);

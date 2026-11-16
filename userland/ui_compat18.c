@@ -73,6 +73,7 @@ static void phone_gestalt_image(const struct mach_header *,intptr_t);
 static void phone_repair_actual_bar(void *);
 static void stui_repair_bar(id);
 static bool boot_option(const char *option);
+void thor_switcher_timing_start(void);
 static bool own_directory(const char *path);
 void pong_boot_snapshot_start(const char *name);
 void pong_settings18_start(void);
@@ -2015,6 +2016,7 @@ __attribute__((constructor)) static void pong_ui18_start(void)
     }
     if(!strcmp(name,"Sileo")){sileo_directories();return;}
     if(!strcmp(name,"SpringBoard")) {
+        if (boot_option("thor_switcher_trace=1")) thor_switcher_timing_start();
         keyboard_retire_old_images();
         keyboard_defaults();_dyld_register_func_for_add_image(keyboard_native_image);
         pong_audio_volume18_start();

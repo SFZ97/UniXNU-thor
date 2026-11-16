@@ -36,7 +36,8 @@ UFS_HC_SIZE = 0x3000
 GCC_UFS_PAGE = 0x00187000
 UFS_STREAM_ID = 0xE0
 UFS_SPI = 265
-CPU_AFFINITIES = [i << 8 for i in range(8)]
+SM8475_AFFINITIES = tuple(i << 8 for i in range(8))
+CPU_AFFINITIES = SM8475_AFFINITIES
 
 
 def load_format2_hardware(path):
@@ -62,9 +63,9 @@ def load_format2_hardware(path):
     TIMEBASE=value(nodes['/cpus'],'timebase-frequency')
     cpus=[p for n,p in nodes.items() if n.startswith('/cpus/cpu@') and
           p.get('status',b'okay\0') in (b'okay\0',b'ok\0')]
-    CPU_AFFINITIES=sorted(value(p,'reg') for p in cpus)
-    if len(CPU_AFFINITIES)!=8 or CPU_AFFINITIES[0]!=0:
-        raise ValueError('This Pong profile requires its eight physical CPU affinities')
+    CPU_AFFINITIES = tuple(sorted(value(p, 'reg') for p in cpus))
+    if CPU_AFFINITIES != SM8475_AFFINITIES:
+        raise ValueError('This profile requires the eight SM8475 CPU affinities')
     memory=next(p for p in nodes.values() if p.get('device_type')==b'memory\0')
     DRAM_BASE=int.from_bytes(memory['reg'][:8],'big')
     ufs=next(p for p in nodes.values() if b'qcom,sm8475-ufshc\0' in p.get('compatible',b''))
@@ -224,6 +225,8 @@ def main():
     cpus = [node(f'cpu{i}', [
         ('state', b'running\0' if i == 0 else b'stopped\0'),
         ('reg', struct.pack('<I', CPU_AFFINITIES[i])),
+        # Keep physical affinities while exporting the two XNU scheduler types.
+        ('cluster-type', struct.pack('<I', ord('E' if i < 4 else 'P'))),
         ('device_type', b'cpu\0'),
         ('compatible', b'qcom,kryo\0'),
         ('timebase-frequency', struct.pack('<I', TIMEBASE)),

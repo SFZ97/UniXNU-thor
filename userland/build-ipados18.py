@@ -863,6 +863,7 @@ def compile_ui(out, developer):
            '-Wl,-no_fixup_chains', '-install_name', '/pong/libpong-ui18.dylib',
            '-framework', 'CoreFoundation', '-framework', 'CoreGraphics', '-lobjc',
            str(PROJECT / 'userland/ui_compat18.c'),
+           str(PROJECT / 'userland/thor_switcher_timing18.c'),
            str(PROJECT / 'userland/settings_compat18.c'),
            str(PROJECT / 'userland/boot_snapshot18.c'),
            str(PROJECT / 'userland/touch.c'),

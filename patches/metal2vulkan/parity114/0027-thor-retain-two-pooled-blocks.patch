@@ -1,0 +1,11 @@
+--- a/crates/metal2vulkan-runtime/src/memory.rs
++++ b/crates/metal2vulkan-runtime/src/memory.rs
+@@ -586,7 +586,7 @@
+         let kept = (self.blocks.iter().enumerate())
+             .filter(|&(other, block)| other != index && block.as_ref().is_some_and(PoolBlock::kept))
+             .count();
+-        if !dedicated && kept < if board_spare_limit().is_some() { 1 } else { KEPT_EMPTY_BLOCKS } {
++        if !dedicated && kept < KEPT_EMPTY_BLOCKS {
+             if let Some(block) = self.blocks[index].as_mut() {
+                 block.emptied = Some(now);
+             }

@@ -1,0 +1,104 @@
+diff --git a/PongAdrenoPlatform.cpp b/PongAdrenoPlatform.cpp
+index a5be5f0..7965743 100644
+--- a/PongAdrenoPlatform.cpp
++++ b/PongAdrenoPlatform.cpp
+@@ -12,6 +12,8 @@
+ #include <kern/task.h>
+ #include <libkern/c++/OSSharedPtr.h>
+ #include <pexpert/pexpert.h>
++#include <sys/vnode.h>
++#include "../PongPower/PongPlatformResources.h"
+ #include "PongAdrenoGmu.h"
+ #include "PongAdrenoClocks.h"
+ #include "PongAdrenoSmmu.h"
+@@ -329,24 +331,68 @@ static int cp_write(void *,uint32_t reg,uint32_t value)
+         return gpu_write(nullptr,w,size_t(pa-PongAdrenoWindows[w].physical),value);
+     return 1;
+ }
++static bool thor_device()
++{
++    char board[16] = {};
++    return PE_parse_boot_argn("arp0", board, sizeof(board)) &&
++        strncmp(board, "thor", sizeof(board)) == 0;
++}
++
++static bool wait_for_root()
++{
++    // I/O Kit starts the platform before BSD installs the initial root.
++    // Avoid blocking the root path or touching GPU resources if it failed.
++    for (unsigned waited = 0; waited < 30000; waited += 100) {
++        if (vnode_t root = vfs_rootvnode()) {
++            vnode_put(root);
++            return true;
++        }
++        IOSleep(100);
++    }
++    return false;
++}
++
++static bool vote_thor_parents(const PongPowerInputs &inputs)
++{
++    const unsigned mx = retained_corner(inputs.mx);
++    const unsigned cx = retained_corner(inputs.cx);
++    if (mx == 16 || cx == 16) {
++        record("SKIP Thor ARC AUX levels", 1, mx, cx);
++        return false;
++    }
++    if (!pong_rpmh_vote(inputs.mx.address, mx) || !pong_rpmh_vote(inputs.cx.address, cx)) {
++        record("FAIL Thor shared parent votes", 1, mx, cx);
++        return false;
++    }
++    record("Thor shared parent ARC votes acknowledged", 0, mx, cx);
++    return true;
++}
++
+ static void run(void *,wait_result_t)
+ {
++    const bool thor = thor_device();
++    if (thor && !wait_for_root()) {
++        record("SKIP Thor root not ready for GPU", 1);
++        return;
++    }
+ #if defined(PONG_GUEST_22H374)
+-    unsigned power_level=0; // Pong DT maximum: 900 MHz, paired DDR level11.
++    /* Thor's verified stock table tops out at level 0: 900 MHz,
++     * GFX/CX 416 and DDR vote 11. Select that point for this trial. */
++    unsigned power_level = 0;
+ #else
+-    unsigned power_level=PongAdrenoBootPowerLevel;
++    unsigned power_level = PongAdrenoBootPowerLevel;
+ #endif
+     PE_parse_boot_argn("pong_gpu_pwrlevel",&power_level,sizeof power_level);
+-    unsigned lock_max=1;PE_parse_boot_argn("pong_gpu_lock_max",&lock_max,sizeof lock_max);
++    unsigned lock_max=thor?0:1;PE_parse_boot_argn("pong_gpu_lock_max",&lock_max,sizeof lock_max);
+     if(lock_max)power_level=0; // actual Pong DT900MHz and matching maximum BW
+     if(power_level>=PongAdrenoPowerLevelCount){record("SKIP invalid GPU power level",power_level);return;}
+     record("startup requested; no accelerator published",0);
+-    if(!map(gcc,0x100000,0x1f4200)||!map(rsc,0x17a20000,0x10000)||!map(db,0x80860000,0x20000))
++    if(!map(gcc,0x100000,0x1f4200)||(!thor&&!map(rsc,0x17a20000,0x10000))||!map(db,0x80860000,0x20000))
+         {record("SKIP resource mapping",1);return;}
+     PongPowerInputs inputs={};auto input_status=PongAdrenoReadPowerInputs(
+         reinterpret_cast<const uint8_t *>(db.cpu),db.bytes,PongAdrenoChipId,&inputs);
+     if(input_status){record("SKIP command-db",input_status);return;}
+-    if(!vote_parents(inputs)){record("FAIL parent votes",1);return;}
++    if(thor ? !vote_thor_parents(inputs) : !vote_parents(inputs)){record("FAIL parent votes",1);return;}
+     parents_ready=1;
+     // GPUCC register interface must be clocked before even reading GPUCC.
+     wr(gcc,0x81004,rd(gcc,0x81004)|1);IODelay(10);
+@@ -366,9 +412,15 @@ static void run(void *,wait_result_t)
+         {record("SKIP GPU window map",1,i);return;}
+     uint32_t reset=rd(windows[PongGpuGmu],GEN7_GMU_CM3_SYSRESET*4-0x68000);
+     if(reset!=1){record("SKIP CM3 not held in reset",1,reset);return;}
+-    if(!start_smmu()){record("FAIL GMU SMMU ownership/configuration",1);return;}
++    if(!pong_smmu_lease_lock()){record("SKIP GPU SMMU lease unavailable",1);return;}
++    bool gmu_ready=start_smmu();
++    if(!gmu_ready){
++        pong_smmu_lease_unlock();
++        record("FAIL GMU SMMU ownership/configuration",1);return;
++    }
+     PongCpOps cp={{nullptr,cp_write,cp_read,barrier},smmu_io,record};
+     auto prepared=PongAdrenoCpPrepare(&cp);
++    pong_smmu_lease_unlock();
+     if(prepared){record("FAIL GPU context preparation",prepared);return;}
+     gmu.io={nullptr,healthy,gpu_read,gpu_write,barrier,publish,now,wait};
+     PongGpuGmuConfig gc={PongAdrenoChipId,PongAdrenoGmuFirmware,PongAdrenoGmuFirmwareBytes,

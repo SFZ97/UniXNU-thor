@@ -16,6 +16,7 @@ import sys
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 import pong_paths
+from pong_adreno_source import prepare_thor_platform
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
@@ -82,6 +83,9 @@ def main():
     cmd=commands[0].copy();cmd[cmd.index('-c')+1]=str(data);cmd[-1]=str(obj)
     subprocess.run(cmd,env=env,check=True);commands.append(cmd);objects.append(obj)
     framework=a.tree/'.cache/fakeroot/System/Library/Frameworks/Kernel.framework/Versions/A'
+    platform_source = source / 'PongAdrenoPlatform.cpp'
+    if a.guest_build == '22H374':
+        platform_source = prepare_thor_platform(ROOT, platform_source, out)
     obj=out/'PongAdrenoPlatform.o'
     cmd=['xcrun','clang++','-target',target,'-isysroot',sdk,
         '-mkernel','-ffreestanding','-fno-builtin','-fno-stack-protector','-mgeneral-regs-only',
@@ -91,7 +95,7 @@ def main():
         '-I'+str(framework/'PrivateHeaders'),'-I'+str(framework/'Headers'),
         '-I'+str(out),'-I'+str(source),'-I'+str(source/'ArmSmmu4K'),
         '-Wno-deprecated-declarations',
-        '-c',str(source/'PongAdrenoPlatform.cpp'),'-o',str(obj)]
+        '-c',str(platform_source),'-o',str(obj)]
     subprocess.run(cmd,env=env,check=True);commands.append(cmd);objects.append(obj)
     cpp_template=cmd.copy()
     names=['PongAdrenoCp','PongAdrenoNativeGlue','PongAdrenoScanout','PongAdrenoAccelerator']+['submit/'+n for n in [

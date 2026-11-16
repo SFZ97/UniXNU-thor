@@ -15,7 +15,7 @@
 	url = https://github.com/Chengdong-Yu/pong-darwin-boot24.git
 [submodule "drivers/NativeUfs"]
 	path = drivers/NativeUfs
-	url = https://github.com/Chengdong-Yu/pong-ufs.git
+	url = https://github.com/andyli386/pong-ufs.git
 [submodule "drivers/PongAdreno"]
 	path = drivers/PongAdreno
 	url = https://github.com/Chengdong-Yu/pong-adreno.git

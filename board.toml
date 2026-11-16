@@ -121,6 +121,8 @@ kernel_args = [
   "pong_adsp=2",
   "pong_audio=2",
   "pong_ufs_readwrite=1",
+  "pong_ufs_userdata_first_4k=0x2dfa00",
+  "pong_ufs_userdata_last_4k=0x7683bfa",
   "ignition_level=1",
   "dyld_flags=0x8",
   "launchd_rd=md0",
@@ -159,11 +161,10 @@ unique_chip_id = "required"
 chip_id = "0x8010"
 
 [userdata]
-# The userdata partition this board installs into, in 4 KiB sectors: the geometry
-# scripts/install-pong-ufs-data.py and scripts/prepare-ipados18-ufs-layout.py check
-# against, and the same pair those scripts read from the device's own GPT.
-first_lba = 0x413248
-last_lba = 0x75A40EA
+# Thor Recovery GPT geometry in 4 KiB sectors, with an inclusive last LBA.
+# NativeUfs validates the same start and end before exposing SHNGROOT windows.
+first_lba = 0x2DFA00
+last_lba = 0x7683BFA
 lba_bytes = 4096
 # The windows of the userdata image are the OS and SystemOS disk images of the IPSW, in
 # that order; the OS profile lists them ([userdata] windows of

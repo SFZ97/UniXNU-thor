@@ -4,12 +4,17 @@
 Each window's SHA-256 is stored in the directory entry. The images themselves
 stay where they are; this writer does not copy them into a new disk image.
 """
-import argparse,hashlib,json,struct,sys
+import argparse,hashlib,json,struct,sys,tomllib
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1];MIB=1<<20
 sys.path.insert(0,str(ROOT/'scripts'))
 import pong_paths
-FIRST=0x413248;LAST=0x75a40ea
+board = tomllib.loads((ROOT / 'board.toml').read_text())
+geometry = board['userdata']
+FIRST = geometry['first_lba']
+LAST = geometry['last_lba']
+if geometry['lba_bytes'] != 4096 or not 0 < FIRST <= LAST:
+    raise SystemExit('Board userdata must specify an ordered pair of 4 KiB LBAs')
 
 def digest_file(path):
     digest=hashlib.sha256()
@@ -32,11 +37,11 @@ for name,path in [('OS',a.userland/'pong-ipados18-system.cdr'),('SystemOS',a.sys
  digest=digest_file(path)
  records.append(dict(name=name,image=str(path),offset=cursor,size=size,block_bytes=512,sha256=digest.hex(),volume_uuid=volumes[{'OS':'os','SystemOS':'systemos','Data':'data'}[name]]['uuid']))
  cursor=(cursor+size+MIB-1)//MIB*MIB
-if cursor>(LAST-FIRST+1)*4096:raise SystemExit('Windows exceed Pong userdata')
+if cursor>(LAST-FIRST+1)*4096:raise SystemExit('Windows exceed board userdata')
 header=bytearray(4096);header[:8]=b'SHNGROOT';struct.pack_into('<IIQ',header,8,1,len(records),cursor)
 for i,r in enumerate(records):struct.pack_into('<32sQQII32s40s',header,24+i*128,r['name'].encode(),r['offset'],r['size'],512,1,bytes.fromhex(r['sha256']),bytes(40))
 # Directory checksum covers the 4064-byte header, which now includes each window SHA-256.
 header[4064:]=hashlib.sha256(header[:4064]).digest()
 a.output_dir.mkdir(parents=True,exist_ok=True);(a.output_dir/'shngroot-ipados18.bin').write_bytes(header)
-result=dict(build='22H374',board='Pong/SM8475',target='/dev/block/by-name/userdata',partition_first_4k=FIRST,partition_last_4k=LAST,image_bytes=cursor,windows=records,image_verification='window sha256 recorded in the directory',partition_writes=False)
+result=dict(build='22H374',board=f"{board['board']['name']}/{board['board']['soc']}",target='/dev/block/by-name/userdata',partition_first_4k=FIRST,partition_last_4k=LAST,image_bytes=cursor,windows=records,image_verification='window sha256 recorded in the directory',partition_writes=False)
 (a.output_dir/'ufs-layout.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result,indent=2))

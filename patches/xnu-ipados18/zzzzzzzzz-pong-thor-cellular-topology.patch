@@ -1,0 +1,61 @@
+diff --git a/osfmk/arm/arm_init.c b/osfmk/arm/arm_init.c
+index 77b178c..1aaed42 100644
+--- a/osfmk/arm/arm_init.c
++++ b/osfmk/arm/arm_init.c
+@@ -598,4 +598,56 @@ arm_init(
+ #if defined(PONG)
+     printf("Pong RAM: %u owned banks, %llu MiB managed before kernel reservations, 4 KiB pages\n",
+         pong_ram_range_count, pong_ram_bytes >> 20);
++	/* This property describes verified Thor topology only. No firmware, MMIO
++	 * or DMA is accessed. Compare its carveouts with loader-owned VM RAM. */
++	SecureDTEntry chosen;
++	const void *property = NULL;
++	unsigned size = 0;
++	uint32_t cell[28];
++	if (SecureDTLookupEntry(NULL, "/chosen", &chosen) == kSuccess &&
++	    SecureDTGetProperty(chosen, "thor-cellular-profile", &property, &size) == kSuccess) {
++		if (property == NULL || size != sizeof(cell)) {
++			printf("THOR CELL: invalid ADT profile size %u\n", size);
++		} else {
++			memcpy(cell, property, sizeof(cell));
++			if (cell[0] != 0x4c434854 || cell[1] != 1 || cell[3] != 4) {
++				printf("THOR CELL: invalid ADT profile header\n");
++			} else {
++				unsigned invalid = 0, overlap = 0;
++				for (unsigned row = 0; row < 4; row++) {
++					const uint64_t start = cell[4 + 2 * row];
++					const uint64_t length = cell[5 + 2 * row];
++					const uint64_t end = start + length;
++					if (!start || !length || ((start | length) & 0xfff) ||
++					    end > 0x100000000ULL) {
++						invalid |= 1u << row;
++						continue;
++					}
++					for (unsigned bank = 0; bank < pong_ram_range_count; bank++) {
++						if (start < pong_ram_ranges[bank].end &&
++						    end > pong_ram_ranges[bank].start) {
++							overlap |= 1u << row;
++							break;
++						}
++					}
++					for (unsigned other = 0; other < row; other++) {
++						const uint64_t other_start = cell[4 + 2 * other];
++						const uint64_t other_end = other_start + cell[5 + 2 * other];
++						if (start < other_end && end > other_start) {
++							invalid |= (1u << row) | (1u << other);
++						}
++					}
++				}
++				printf("THOR CELL: source_fdt_crc=%08x carveouts=4 invalid_mask=0x%x "
++				    "vm_overlap_mask=0x%x mode=topology-only\n", cell[2], invalid, overlap);
++				printf("THOR CELL: SMEM=%x+%x IPA-FW=%x+%x IPA-GSI=%x+%x MPSS=%x+%x\n",
++				    cell[4], cell[5], cell[6], cell[7], cell[8], cell[9], cell[10], cell[11]);
++				printf("THOR CELL: modem=%x+%x ipcc=%x ipa=%x/%x gsi=%x hw_id=%x pas=%u "
++				    "ap/uc_sid=%x/%x remote=%u smp2p=%u/%u rmtfs=%x spi=%u/%u\n",
++				    cell[12], cell[13], cell[14], cell[15], cell[16], cell[17],
++				    cell[18], cell[19], cell[20], cell[21], cell[22], cell[23],
++				    cell[24], cell[25], cell[26], cell[27]);
++			}
++		}
++	}
+ #endif
